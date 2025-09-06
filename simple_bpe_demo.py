@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""
+Simplified BPE (Byte Pair Encoding) implementation demo
+For understanding BPE merge rules and working principles
+"""
+
+from typing import List, Tuple, Dict, Optional
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
+from tokenizers.pre_tokenizers import Whitespace
+import json
+
+
+class SimpleBPE:
+    """Simplified BPE implementation with only core merge logic"""
+    
+    def __init__(self, vocab: Dict[str, int], merges: List[Tuple[str, str]]):
+        """
+        Initialize BPE model
+        
+        Args:
+            vocab: Vocabulary mapping tokens to IDs
+            merges: List of merge rules, sorted by priority
+        """
+        self.vocab = vocab
+        self.vocab_r = {v: k for k, v in vocab.items()}  # Reverse vocabulary
+        # Convert merges to (pair -> (rank, new_token)) mapping
+        self.merge_map = {}
+        for rank, (a, b) in enumerate(merges):
+            merged = a + b
+            if merged in vocab:
+                self.merge_map[(a, b)] = (rank, merged, vocab[merged])
+    
+    def tokenize_word(self, word: str) -> List[Tuple[int, str]]:
+        """
+        Tokenize a single word using BPE (simplified version)
+        
+        Args:
+            word: Word to tokenize
+            
+        Returns:
+            List of (token_id, token_str) tuples
+        """
+        # Handle empty string
+        if not word:
+            return []
+            
+        # Step 1: Split word into character-level tokens
+        tokens = []
+        for char in word:
+            if char in self.vocab:
+                tokens.append(char)
+            else:
+                # Simplified: use <unk> for unknown characters
+                tokens.append('<unk>')
+        
+        # If only one token, return directly
+        if len(tokens) == 1:
+            token = tokens[0]
+            if token in self.vocab:
+                return [(self.vocab[token], token)]
+            else:
+                return [(self.vocab.get('<unk>', 0), '<unk>')]
+        
+        # Step 2: Iteratively merge
+        while len(tokens) > 1:
+            # Find all adjacent pairs
+            pairs = []
+            for i in range(len(tokens) - 1):
+                pair = (tokens[i], tokens[i + 1])
+                if pair in self.merge_map:
+                    rank, _, _ = self.merge_map[pair]
+                    pairs.append((i, pair, rank))
+            
+            if not pairs:
+                break  # No mergeable pairs
+            
+            # Find highest priority (lowest rank) pair
+            pairs.sort(key=lambda x: x[2])
+            pos, (a, b), _ = pairs[0]
+            
+            # Execute merge
+            _, merged_token, _ = self.merge_map[(a, b)]
+            new_tokens = tokens[:pos] + [merged_token] + tokens[pos + 2:]
+            tokens = new_tokens
+            
+            # Only print when merging, not every time
+            if len(tokens) <= 10:  # Avoid too long output
+                print(f"  Merge: '{a}' + '{b}' -> '{merged_token}'")
+                print(f"  Current: {tokens}")
+        
+        # Convert to (id, token) format
+        result = []
+        for token in tokens:
+            if token in self.vocab:
+                result.append((self.vocab[token], token))
+            else:
+                result.append((self.vocab.get('<unk>', 0), '<unk>'))
+        
+        return result
+    
+    def tokenize(self, text: str) -> List[Tuple[int, str]]:
+        """Tokenize text (split by spaces and process word by word)"""
+        # Simple space splitting (real BPE would use more complex pre-tokenizers)
+        # This is a simplified handling of spaces
+        if not text:
+            return []
+            
+        words = text.split()
+        all_tokens = []
+        
+        for i, word in enumerate(words):
+            if not word:  # Skip empty words
+                continue
+                
+            print(f"\nProcessing word: '{word}'")
+            tokens = self.tokenize_word(word)
+            all_tokens.extend(tokens)
+            
+            # Add space if not last word (if space is in vocab)
+            if i < len(words) - 1 and ' ' in self.vocab:
+                all_tokens.append((self.vocab[' '], ' '))
+        
+        return all_tokens
+
+
+def compare_with_huggingface():
+    """Compare simplified implementation with HuggingFace standard implementation"""
+    
+    # Create simple training data
+    corpus = [
+        "hello world",
+        "hello there", 
+        "how are you",
+        "the quick brown fox",
+        "the lazy dog",
+        "hello hello hello",
+        "the the the"
+    ]
+    
+    # Train a small BPE model using HuggingFace tokenizers
+    print("=== Training BPE Model ===")
+    tokenizer = Tokenizer(BPE(unk_token="<unk>"))
+    tokenizer.pre_tokenizer = Whitespace()
+    
+    trainer = BpeTrainer(
+        vocab_size=100,  # Increase vocab size to cover more characters
+        min_frequency=1,
+        show_progress=False,
+        special_tokens=["<unk>", "<pad>", "<s>", "</s>"]
+    )
+    
+    tokenizer.train_from_iterator(corpus, trainer)
+    
+    # Extract vocabulary and merge rules
+    # Save to temp file to get model data
+    import tempfile
+    import os
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        temp_file = f.name
+        tokenizer.save(temp_file)
+    
+    with open(temp_file, 'r') as f:
+        tokenizer_data = json.load(f)
+    
+    os.unlink(temp_file)
+    
+    model_dict = tokenizer_data['model']
+    vocab = model_dict['vocab']
+    merges = [tuple(pair.split() if isinstance(pair, str) else pair) for pair in model_dict['merges']]
+    
+    print(f"\nVocabulary size: {len(vocab)}")
+    print(f"Number of merge rules: {len(merges)}")
+    print(f"\nFirst 10 merge rules:")
+    for i, (a, b) in enumerate(merges[:10]):
+        print(f"  {i}: '{a}' + '{b}' -> '{a}{b}'")
+    
+    # Create simplified BPE
+    simple_bpe = SimpleBPE(vocab, merges)
+    
+    # Test texts - only test word-level since we use Whitespace pre-tokenizer
+    test_texts = [
+        # Single word tests
+        ("hello", "single word test"),
+        ("the", "common word"),
+        ("world", "another common word"),
+        ("quick", "test merge"),
+        # Unseen words
+        ("unknown", "unseen word"),
+        ("test", "test word"),
+        # Case tests
+        ("HELLO", "uppercase word"),
+        ("World", "capitalized word"),
+        # Number tests
+        ("123", "pure numbers"),
+        ("hello123", "alphanumeric"),
+    ]
+    
+    print("\n\n=== Comparison Test ===")
+    print("Note: Since we use Whitespace pre-tokenizer, we only test single word tokenization\n")
+    
+    # Statistics
+    total_tests = 0
+    passed_tests = 0
+    failed_tests = []
+    
+    for text, description in test_texts:
+        total_tests += 1
+        print(f"\nTest {total_tests}: '{text}' ({description})")
+        print("-" * 50)
+        
+        # HuggingFace results - encode single word only
+        hf_encoding = tokenizer.encode(text)
+        hf_tokens = hf_encoding.tokens
+        hf_ids = hf_encoding.ids
+        print(f"HuggingFace results:")
+        print(f"  Tokens: {hf_tokens}")
+        print(f"  IDs:    {hf_ids}")
+        
+        # Simplified version results - directly call tokenize_word for single word
+        print(f"\nSimplified version:")
+        # Don't print detailed process to avoid too much output
+        import io
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        
+        try:
+            simple_result = simple_bpe.tokenize_word(text)
+            simple_ids = [id for id, _ in simple_result]
+            simple_tokens = [token for _, token in simple_result]
+        finally:
+            sys.stdout = old_stdout
+            
+        print(f"  Tokens: {simple_tokens}")
+        print(f"  IDs:    {simple_ids}")
+        
+        # Compare results
+        if hf_ids == simple_ids:
+            print("\nStatus: ✅ PASS")
+            passed_tests += 1
+        else:
+            print("\nStatus: ❌ FAIL")
+            print(f"Difference details:")
+            print(f"  - HuggingFace: {list(zip(hf_tokens, hf_ids))}")
+            print(f"  - Simplified:  {list(zip(simple_tokens, simple_ids))}")
+            failed_tests.append((text, description))
+    
+    # Summary report
+    print("\n" + "=" * 60)
+    print("📊 Test Summary")
+    print("=" * 60)
+    print(f"Total tests: {total_tests}")
+    print(f"✅ Passed: {passed_tests} ({passed_tests/total_tests*100:.1f}%)")
+    print(f"❌ Failed: {len(failed_tests)} ({len(failed_tests)/total_tests*100:.1f}%)")
+    
+    if failed_tests:
+        print("\nFailed tests:")
+        for text, desc in failed_tests:
+            print(f"  - '{text}' ({desc})")
+
+
+def complex_cases_demo():
+    """Demonstrate BPE behavior in complex cases"""
+    print("\n\n=== Complex Cases Demo ===")
+    
+    # Create a vocabulary containing various characters
+    vocab = {
+        # Basic letters
+        'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7,
+        'i': 8, 'j': 9, 'k': 10, 'l': 11, 'm': 12, 'n': 13, 'o': 14, 'p': 15,
+        'q': 16, 'r': 17, 's': 18, 't': 19, 'u': 20, 'v': 21, 'w': 22, 'x': 23,
+        'y': 24, 'z': 25,
+        # Numbers
+        '0': 26, '1': 27, '2': 28, '3': 29, '4': 30, '5': 31, '6': 32, '7': 33, '8': 34, '9': 35,
+        # Punctuation
+        ',': 36, '.': 37, '!': 38, '?': 39, '-': 40, ' ': 41,
+        # Merged tokens
+        'th': 42, 'he': 43, 'the': 44,
+        'in': 45, 'ing': 46,
+        'ed': 47,
+        'll': 48,
+        '12': 49, '123': 50,
+        '<unk>': 99
+    }
+    
+    # Define merge rules
+    merges = [
+        ('t', 'h'),      # 'th'
+        ('h', 'e'),      # 'he'
+        ('th', 'e'),     # 'the'
+        ('i', 'n'),      # 'in'
+        ('in', 'g'),     # 'ing'
+        ('e', 'd'),      # 'ed'
+        ('l', 'l'),      # 'll'
+        ('1', '2'),      # '12'
+        ('12', '3'),     # '123'
+    ]
+    
+    simple_bpe = SimpleBPE(vocab, merges)
+    
+    # Test various complex cases
+    complex_tests = [
+        ("the", "common word"),
+        ("thing", "contains 'ing' suffix"),
+        ("called", "contains 'ed' suffix and 'll'"),
+        ("123", "pure numbers"),
+        ("123abc", "starts with numbers"),
+        ("abc123", "ends with numbers"),
+        ("the-thing", "hyphenated"),
+        ("THE", "uppercase (becomes <unk>)"),
+        ("hello你好", "mixed English-Chinese"),
+        ("", "empty string"),
+        ("a", "single character"),
+        ("aaaaa", "repeated characters"),
+    ]
+    
+    for text, description in complex_tests:
+        print(f"\nTest: '{text}' ({description})")
+        try:
+            result = simple_bpe.tokenize_word(text)
+            print(f"Result: {result}")
+        except Exception as e:
+            print(f"Error: {e}")
+
+
+def accurate_comparison_test():
+    """Accurate comparison test - using exactly the same vocabulary and merge rules"""
+    print("\n\n=== Accurate Comparison Test ===")
+    print("Using HuggingFace trained model, ensuring vocabulary is exactly the same\n")
+    
+    # Training data
+    corpus = [
+        "the quick brown fox jumps over the lazy dog",
+        "hello world hello there",
+        "testing testing one two three",
+        "this is a test sentence",
+        "machine learning is amazing"
+    ]
+    
+    # Train HuggingFace BPE
+    tokenizer = Tokenizer(BPE(unk_token="<unk>"))
+    tokenizer.pre_tokenizer = Whitespace()
+    
+    trainer = BpeTrainer(
+        vocab_size=200,
+        min_frequency=1,
+        show_progress=False,
+        special_tokens=["<unk>"]
+    )
+    
+    tokenizer.train_from_iterator(corpus, trainer)
+    
+    # Extract model data
+    import tempfile
+    import os
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        temp_file = f.name
+        tokenizer.save(temp_file)
+    
+    with open(temp_file, 'r') as f:
+        tokenizer_data = json.load(f)
+    
+    os.unlink(temp_file)
+    
+    model_dict = tokenizer_data['model']
+    vocab = model_dict['vocab']
+    merges = [tuple(pair.split() if isinstance(pair, str) else pair) for pair in model_dict['merges']]
+    
+    # Create simplified BPE (using same vocabulary)
+    simple_bpe = SimpleBPE(vocab, merges)
+    
+    # Test cases
+    test_cases = [
+        # Words from training set
+        "the", "quick", "hello", "world", "test",
+        # Phrase combinations from training set
+        "brown", "fox", "lazy", "dog",
+        # New word tests
+        "new", "word", "unseen",
+        # Contains numbers
+        "test123", "456test",
+        # Case variations
+        "Hello", "WORLD", "Test"
+    ]
+    
+    results = []
+    
+    for word in test_cases:
+        # HuggingFace encoding
+        hf_encoding = tokenizer.encode(word)
+        hf_tokens = hf_encoding.tokens
+        hf_ids = hf_encoding.ids
+        
+        # Simplified version encoding (silent mode)
+        import io
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        
+        try:
+            simple_result = simple_bpe.tokenize_word(word)
+            simple_ids = [id for id, _ in simple_result]
+            simple_tokens = [token for _, token in simple_result]
+        finally:
+            sys.stdout = old_stdout
+        
+        # Record results
+        is_match = hf_ids == simple_ids
+        results.append({
+            'word': word,
+            'hf_tokens': hf_tokens,
+            'hf_ids': hf_ids,
+            'simple_tokens': simple_tokens,
+            'simple_ids': simple_ids,
+            'match': is_match
+        })
+    
+    # Display results table
+    print(f"{'Word':<15} {'HuggingFace':<30} {'Simplified':<30} {'Match':<10}")
+    print("-" * 85)
+    
+    passed = 0
+    for r in results:
+        hf_str = str(list(zip(r['hf_tokens'], r['hf_ids'])))
+        simple_str = str(list(zip(r['simple_tokens'], r['simple_ids'])))
+        status = "✅" if r['match'] else "❌"
+        if r['match']:
+            passed += 1
+        
+        print(f"{r['word']:<15} {hf_str:<30} {simple_str:<30} {status:<10}")
+    
+    # Summary
+    print("\n" + "=" * 85)
+    print(f"Total: {len(results)} tests")
+    print(f"Passed: {passed} ({passed/len(results)*100:.1f}%)")
+    print(f"Failed: {len(results)-passed} ({(len(results)-passed)/len(results)*100:.1f}%)")
+    
+    # Analyze failures
+    failed_results = [r for r in results if not r['match']]
+    if failed_results:
+        print("\nFailure analysis:")
+        for r in failed_results:
+            print(f"\n'{r['word']}':")
+            print(f"  HuggingFace: {r['hf_tokens']} -> {r['hf_ids']}")
+            print(f"  Simplified:  {r['simple_tokens']} -> {r['simple_ids']}")
+            
+            # Check vocabulary
+            for token in r['simple_tokens']:
+                if token not in vocab and token != '<unk>':
+                    print(f"  ⚠️  Token '{token}' not in vocabulary")
+
+
+def edge_case_tests():
+    """Test edge cases and error handling"""
+    print("\n\n=== Edge Case Tests ===")
+    
+    # Minimal vocabulary
+    minimal_vocab = {
+        'a': 0,
+        'b': 1,
+        'ab': 2,
+        '<unk>': 3
+    }
+    
+    minimal_merges = [
+        ('a', 'b'),  # Merge to 'ab'
+    ]
+    
+    simple_bpe = SimpleBPE(minimal_vocab, minimal_merges)
+    
+    edge_tests = [
+        ("", "empty string"),
+        ("a", "single known character"),
+        ("b", "another known character"),
+        ("ab", "mergeable character pair"),
+        ("aba", "partially mergeable"),
+        ("abab", "multiple merges"),
+        ("c", "unknown character"),
+        ("abc", "contains unknown character"),
+        ("aaa", "repeated characters"),
+        ("aaabbb", "multiple repeated characters"),
+        ("abcdef", "multiple unknown characters"),
+        ("a b", "contains space (unknown)"),
+        ("a🌟b", "contains emoji"),
+        ("a\nb", "contains newline"),
+        ("a\tb", "contains tab"),
+        ("aaaaaaaaaa", "very long repetition"),
+    ]
+    
+    for text, description in edge_tests:
+        print(f"\nTest: '{repr(text)}' ({description})")
+        try:
+            tokens = simple_bpe.tokenize_word(text)
+            print(f"Result: {tokens}")
+            # Validate results
+            for token_id, token_str in tokens:
+                if token_id not in simple_bpe.vocab_r:
+                    print(f"  ⚠️  Warning: token_id {token_id} not in reverse vocabulary!")
+        except Exception as e:
+            print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+def manual_example():
+    """Manually constructed simple example to understand merge process"""
+    print("\n\n=== Manual Example ===")
+    
+    # Build a simple vocabulary and merge rules
+    vocab = {
+        'h': 0, 'e': 1, 'l': 2, 'o': 3,
+        'll': 4,      # Result of merging 'l' + 'l'
+        'he': 5,      # Result of merging 'h' + 'e'  
+        'llo': 6,     # Result of merging 'll' + 'o'
+        'hello': 7,   # Result of merging 'he' + 'llo'
+        '<unk>': 8
+    }
+    
+    # Merge rules (sorted by priority)
+    merges = [
+        ('l', 'l'),      # First priority: merge 'll'
+        ('h', 'e'),      # Second priority: merge 'he'
+        ('ll', 'o'),     # Third priority: merge 'llo'
+        ('he', 'llo'),   # Fourth priority: merge 'hello'
+    ]
+    
+    simple_bpe = SimpleBPE(vocab, merges)
+    
+    # Demonstrate tokenization process for "hello"
+    print("\nDetailed tokenization process for 'hello':")
+    result = simple_bpe.tokenize_word('hello')
+    print(f"\nFinal result: {result}")
+
+
+if __name__ == "__main__":
+    import sys
+    
+    # Check command line arguments
+    if len(sys.argv) > 1 and sys.argv[1] == "all":
+        # Run all tests
+        manual_example()
+        complex_cases_demo()
+        edge_case_tests()
+        compare_with_huggingface()
+        accurate_comparison_test()
+    else:
+        # Default: run accurate comparison test
+        print("Running accurate comparison test (use 'python simple_bpe_demo.py all' to run all tests)\n")
+        accurate_comparison_test()
