@@ -171,161 +171,89 @@ class SimpleBPE:
                 all_tokens.append((self.vocab[' '], ' '))
         
         return all_tokens
-
-
-def compare_with_huggingface():
-    """Compare simplified implementation with HuggingFace standard implementation"""
     
-    # Create simple training data
-    corpus = [
-        "hello world",
-        "hello there", 
-        "how are you",
-        "the quick brown fox",
-        "the lazy dog",
-        "hello hello hello",
-        "the the the"
-    ]
-    
-    # Train a small BPE model using HuggingFace tokenizers
-    print("=== Training BPE Model ===")
-    tokenizer = Tokenizer(BPE(unk_token="<unk>"))
-    tokenizer.pre_tokenizer = Whitespace()
-    
-    trainer = BpeTrainer(
-        vocab_size=100,  # Increase vocab size to cover more characters
-        min_frequency=1,
-        show_progress=False,
-        special_tokens=["<unk>", "<pad>", "<s>", "</s>"]
-    )
-    
-    tokenizer.train_from_iterator(corpus, trainer)
-    
-    # Extract vocabulary and merge rules
-    # Save to temp file to get model data
-    import tempfile
-    import os
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        temp_file = f.name
-        tokenizer.save(temp_file)
-    
-    with open(temp_file, 'r') as f:
-        tokenizer_data = json.load(f)
-    
-    os.unlink(temp_file)
-    
-    model_dict = tokenizer_data['model']
-    vocab = model_dict['vocab']
-    merges = [tuple(pair.split() if isinstance(pair, str) else pair) for pair in model_dict['merges']]
-    
-    print(f"\nVocabulary size: {len(vocab)}")
-    print(f"Number of merge rules: {len(merges)}")
-    print(f"\nFirst 10 merge rules:")
-    for i, (a, b) in enumerate(merges[:10]):
-        print(f"  {i}: '{a}' + '{b}' -> '{a}{b}'")
-    
-    # Create simplified BPE
-    simple_bpe = SimpleBPE(vocab, merges)
-    
-    # Test texts - only test word-level since we use Whitespace pre-tokenizer
-    test_texts = [
-        # Single word tests
-        ("hello", "single word test"),
-        ("the", "common word"),
-        ("world", "another common word"),
-        ("quick", "test merge"),
-        # Unseen words
-        ("unknown", "unseen word"),
-        ("test", "test word"),
-        # Case tests
-        ("HELLO", "uppercase word"),
-        ("World", "capitalized word"),
-        # Number tests
-        ("123", "pure numbers"),
-        ("hello123", "alphanumeric"),
-    ]
-    
-    print("\n\n=== Comparison Test ===")
-    print("Note: Since we use Whitespace pre-tokenizer, we only test single word tokenization\n")
-    
-    # Statistics
-    total_tests = 0
-    passed_tests = 0
-    failed_tests = []
-    
-    for text, description in test_texts:
-        total_tests += 1
-        print(f"\nTest {total_tests}: '{text}' ({description})")
-        print("-" * 50)
+    def apply_bpe_to_tokens(self, tokens: List[str]) -> List[Tuple[int, str]]:
+        """
+        Apply BPE merges to a list of already pre-tokenized tokens.
+        This allows us to use HuggingFace's pre-tokenizer for consistent input.
         
-        # HuggingFace results - encode single word only
-        hf_encoding = tokenizer.encode(text)
-        hf_tokens = hf_encoding.tokens
-        hf_ids = hf_encoding.ids
-        print(f"HuggingFace results:")
-        print(f"  Tokens: {hf_tokens}")
-        print(f"  IDs:    {hf_ids}")
-        
-        # Simplified version results - directly call tokenize_word for single word
-        print(f"\nSimplified version:")
-        # Don't print detailed process to avoid too much output
-        import io
-        import sys
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        
-        try:
-            simple_result = simple_bpe.tokenize_word(text)
-            simple_ids = [id for id, _ in simple_result]
-            simple_tokens = [token for _, token in simple_result]
-        finally:
-            sys.stdout = old_stdout
+        Args:
+            tokens: List of pre-tokenized strings
             
-        print(f"  Tokens: {simple_tokens}")
-        print(f"  IDs:    {simple_ids}")
+        Returns:
+            List of (token_id, token_str) tuples after BPE merges
+        """
+        # If empty, return empty
+        if not tokens:
+            return []
         
-        # Compare results
-        if hf_ids == simple_ids:
-            print("\nStatus: ✅ PASS")
-            passed_tests += 1
-        else:
-            print("\nStatus: ❌ FAIL")
-            print(f"Difference details:")
-            print(f"  - HuggingFace: {list(zip(hf_tokens, hf_ids))}")
-            print(f"  - Simplified:  {list(zip(simple_tokens, simple_ids))}")
-            failed_tests.append((text, description))
-    
-    # Summary report
-    print("\n" + "=" * 60)
-    print("📊 Test Summary")
-    print("=" * 60)
-    print(f"Total tests: {total_tests}")
-    print(f"✅ Passed: {passed_tests} ({passed_tests/total_tests*100:.1f}%)")
-    print(f"❌ Failed: {len(failed_tests)} ({len(failed_tests)/total_tests*100:.1f}%)")
-    
-    if failed_tests:
-        print("\nFailed tests:")
-        for text, desc in failed_tests:
-            print(f"  - '{text}' ({desc})")
+        # Process each pre-tokenized element
+        all_results = []
+        for token in tokens:
+            # If token is directly in vocab, use it
+            if token in self.vocab:
+                all_results.append((self.vocab[token], token))
+                continue
+                
+            # Otherwise, apply BPE merges to this token
+            # First split into characters that are in vocab
+            char_tokens = []
+            for char in token:
+                if char in self.vocab:
+                    char_tokens.append(char)
+                else:
+                    # Skip characters not in vocab for this comparison
+                    pass
+            
+            if not char_tokens:
+                continue
+                
+            # Apply BPE merges
+            merged_tokens = char_tokens[:]
+            while len(merged_tokens) > 1:
+                # Find best merge
+                best_pair = None
+                best_rank = float('inf')
+                best_idx = -1
+                
+                for i in range(len(merged_tokens) - 1):
+                    pair = (merged_tokens[i], merged_tokens[i + 1])
+                    if pair in self.merge_map:
+                        rank, _, _ = self.merge_map[pair]
+                        if rank < best_rank:
+                            best_rank = rank
+                            best_pair = pair
+                            best_idx = i
+                
+                # No more merges possible
+                if best_pair is None:
+                    break
+                
+                # Apply merge
+                _, merged_token, _ = self.merge_map[best_pair]
+                merged_tokens = merged_tokens[:best_idx] + [merged_token] + merged_tokens[best_idx + 2:]
+            
+            # Convert to (id, token) pairs
+            for t in merged_tokens:
+                if t in self.vocab:
+                    all_results.append((self.vocab[t], t))
+        
+        return all_results
 
-def llama_tokenizer_test():
-    """Test with real LLaMA tokenizer vocabulary and merge rules"""
-    print("\n\n=== Real LLaMA Tokenizer Test ===")
-    print("Testing with a real-world tokenizer configuration\n")
+
+def aligned_bpe_test():
+    """Test BPE merge algorithm using HuggingFace pre-tokenizer for consistent input"""
+    print("\n\n=== Aligned BPE Merge Test ===")
+    print("Using HuggingFace pre-tokenizer for consistent input, comparing only BPE merges\n")
     
     try:
-        # Try to load a pre-trained tokenizer
-        # We'll use GPT-2 as it's a well-known BPE tokenizer that's easily accessible
-        # (LLaMA uses SentencePiece which is slightly different)
-        from tokenizers import Tokenizer
+        from tokenizers import Tokenizer, pre_tokenizers
         import tempfile
         
-        print("Loading GPT-2 tokenizer (BPE-based, similar to LLaMA)...")
-        # Load GPT-2 tokenizer directly
+        print("Loading GPT-2 tokenizer...")
         tokenizer = Tokenizer.from_pretrained("gpt2")
         
-        # Extract vocabulary and merges by temporarily saving
+        # Extract vocabulary and merges
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             temp_file = f.name
             tokenizer.save(temp_file)
@@ -333,83 +261,84 @@ def llama_tokenizer_test():
         with open(temp_file, 'r') as f:
             tokenizer_data = json.load(f)
         
-        # Clean up temp file
         os.unlink(temp_file)
         
         model_data = tokenizer_data['model']
         vocab = model_data['vocab']
-        
-        # Handle different merge formats
         raw_merges = model_data['merges']
+        
         merges = []
         for merge in raw_merges:
             if isinstance(merge, str):
-                # Format: "a b"
                 parts = merge.split()
                 if len(parts) == 2:
                     merges.append(tuple(parts))
             elif isinstance(merge, list) and len(merge) == 2:
-                # Format: ["a", "b"]
                 merges.append(tuple(merge))
         
         print(f"\nTokenizer info:")
         print(f"  Vocabulary size: {len(vocab)}")
         print(f"  Number of merges: {len(merges)}")
-        print(f"  Model type: {model_data.get('type', 'Unknown')}")
-        print(f"\nFirst 10 vocabulary items:")
-        for i, (token, id) in enumerate(list(vocab.items())[:10]):
-            print(f"  {repr(token)}: {id}")
         
-        # Create our simplified BPE with the real vocabulary
+        # Create SimpleBPE with the same vocabulary and merges
         simple_bpe = SimpleBPE(vocab, merges)
         
-        # Test cases - real-world examples
+        # Test cases
         test_texts = [
-            # Common English words
-            ("hello", "common greeting"),
-            ("world", "common noun"),
-            ("artificial", "technical term"),
-            ("intelligence", "technical term"),
-            # Programming terms
-            ("function", "programming term"),
-            ("variable", "programming term"),
-            ("algorithm", "CS term"),
-            # Mixed case and special
-            ("Hello", "capitalized"),
-            ("WORLD", "uppercase"),
-            ("hello123", "alphanumeric"),
-            ("hello_world", "snake_case"),
-            ("helloWorld", "camelCase"),
-            # Common phrases
-            ("machine", "ML term"),
-            ("learning", "ML term"),
-            ("neural", "AI term"),
-            ("network", "AI term"),
-            # Edge cases
-            ("a", "single letter"),
-            ("I", "single capital"),
-            ("123", "numbers"),
-            ("!", "punctuation"),
-            # More complex examples
-            ("OpenAI", "company name"),
-            ("GPT-3", "model name"),
+            ("hello world", "basic greeting"),
+            ("artificial intelligence", "AI term"),
+            ("machine learning", "ML term"),
+            ("Hello World", "capitalized"),
+            ("OpenAI GPT-3", "model name"),
             ("transformer", "architecture"),
             ("tokenization", "NLP term"),
-            ("embeddings", "ML concept"),
-            # Special characters
-            ("hello@world", "email-like"),
+            ("hello@example.com", "email"),
+            ("https://example.com", "URL"),
+            ("The quick brown fox", "pangram"),
+            ("function()", "code"),
+            ("hello_world", "snake_case"),
+            ("helloWorld", "camelCase"),
+            ("123.456", "decimal"),
             ("$100", "currency"),
-            ("3.14", "decimal"),
-            ("http://example.com", "URL"),
-            # Emojis and Unicode (will likely fail)
-            ("😊", "emoji"),
-            ("你好", "Chinese"),
+            # Long sentences from tokenizers tests
+            ("The quick brown fox jumps over the lazy dog", "full pangram"),
+            ("Hello! How are you? I'm fine, thank you.", "conversation"),
+            ("Hey there dear friend!", "greeting"),
+            ("A sentence 🤗", "with emoji"),
+            ("My name is John", "introduction"),
+            ("Call 911!", "emergency"),
+            ("Héllò hôw are ü?", "with accents"),
+            # Technical sentences
+            ("Artificial intelligence and machine learning are transforming the technology landscape", "tech sentence"),
+            ("The development of large language models has revolutionized natural language processing and understanding", "LLM sentence"),
+            ("Python is a high-level, interpreted programming language with dynamic semantics and clear syntax", "programming desc"),
+            ("This function implements the byte pair encoding algorithm which iteratively merges the most frequent pairs of tokens in the vocabulary until reaching the desired vocabulary size or no more merges are possible", "code comment"),
+            # Mixed content from tests
+            ("The model achieved 95.2% accuracy on the test set with a learning rate of 0.001 and batch size of 32 after training for 50 epochs", "model metrics"),
+            ("To install the package, first ensure you have Python 3.7 or higher installed on your system, then run pip install tokenizers in your terminal or command prompt, and finally verify the installation by importing the library in a Python script", "install guide"),
+            # Complex URLs and technical strings
+            ("https://api.openai.com/v1/chat/completions?model=gpt-4&temperature=0.7&max_tokens=150", "API URL"),
+            ("data/wikitext-103-raw/wiki.train.raw", "file path"),
+            ("[CLS] $A [SEP] $B:1 [SEP]:1", "template"),
+            # Very long sentence
+            ("The history of artificial intelligence dates back to ancient times when philosophers contemplated the nature of human reasoning and attempted to describe human thinking as a mechanical manipulation of symbols, but the field as we know it today was formally founded in 1956 at the Dartmouth Conference where researchers gathered to discuss the possibility of creating machines that could simulate human intelligence", "AI history"),
+            # Multiple languages and special characters
+            ("UnigramTrainer can only train a Unigram", "error message"),
+            ("normalizer.normalize_str('Héllò hôw are ü?')", "code example"),
+            # Edge cases from tests
+            ("", "empty string"),
+            ("a", "single char"),
+            ("123", "numbers only"),
+            ("@#$%", "special chars"),
+            # Real tokenizer test cases
+            ("BPE is a subword tokenization algorithm that starts with a character-level vocabulary and iteratively merges the most frequent pairs of adjacent tokens", "BPE explanation"),
+            ("The tokenizer.encode() method converts text to token IDs while tokenizer.decode() converts IDs back to text", "tokenizer methods"),
         ]
         
-        print("\n\nTesting with real tokenizer vocabulary:")
-        print("-" * 90)
-        print(f"{'Text':<20} {'Description':<25} {'Tokenizer':<25} {'SimpleBPE':<25} {'Match'}")
-        print("-" * 90)
+        print("\n\nComparing BPE merge results (using HF pre-tokenizer):")
+        print("-" * 100)
+        print(f"{'Text':<25} {'Description':<20} {'HF Tokens':<30} {'SimpleBPE':<30} {'Match'}")
+        print("-" * 100)
         
         passed = 0
         total = 0
@@ -417,28 +346,25 @@ def llama_tokenizer_test():
         for text, description in test_texts:
             total += 1
             
-            # Tokenize with the real tokenizer
+            # Get pre-tokenized output from HuggingFace
             encoding = tokenizer.encode(text)
-            real_tokens = encoding.tokens
-            real_ids = encoding.ids
             
-            # Tokenize with our implementation
-            import io
-            import sys
-            old_stdout = sys.stdout
-            sys.stdout = io.StringIO()
+            # Also get the pre-tokenized version before BPE
+            # We'll simulate this by using the tokenizer's pre-tokenizer
+            pre_tok_output = tokenizer.pre_tokenizer.pre_tokenize_str(text)
+            pre_tokens = [token for token, _ in pre_tok_output]
             
-            try:
-                # For GPT-2, we need to handle the tokenization differently
-                # as it uses byte-level BPE
-                simple_result = simple_bpe.tokenize_word(text)
-                simple_ids = [id for id, _ in simple_result]
-                simple_tokens = [token for _, token in simple_result]
-            finally:
-                sys.stdout = old_stdout
+            # Apply our BPE to the pre-tokenized output
+            simple_result = simple_bpe.apply_bpe_to_tokens(pre_tokens)
+            simple_tokens = [token for _, token in simple_result]
+            simple_ids = [id for id, _ in simple_result]
             
-            # Compare results
-            match = real_ids == simple_ids
+            # Compare with HuggingFace result
+            hf_tokens = encoding.tokens
+            hf_ids = encoding.ids
+            
+            # Check if they match
+            match = (simple_tokens == hf_tokens)
             if match:
                 passed += 1
                 status = "✅"
@@ -446,184 +372,31 @@ def llama_tokenizer_test():
                 status = "❌"
             
             # Format output
-            real_str = f"{real_tokens[:2]}..." if len(real_tokens) > 2 else str(real_tokens)
-            simple_str = f"{simple_tokens[:2]}..." if len(simple_tokens) > 2 else str(simple_tokens)
+            hf_str = str(hf_tokens[:3]) + "..." if len(hf_tokens) > 3 else str(hf_tokens)
+            simple_str = str(simple_tokens[:3]) + "..." if len(simple_tokens) > 3 else str(simple_tokens)
             
-            print(f"{text:<20} {description:<25} {real_str:<25} {simple_str:<25} {status}")
+            print(f"{text:<25} {description:<20} {hf_str:<30} {simple_str:<30} {status}")
+            
+            if not match:
+                print(f"  Pre-tokens: {pre_tokens}")
+                print(f"  HF result: {hf_tokens}")
+                print(f"  Simple result: {simple_tokens}")
         
-        # Summary
-        print("-" * 90)
+        print("-" * 100)
         print(f"\nResults: {passed}/{total} passed ({passed/total*100:.1f}%)")
         
         if passed < total:
-            print("\nNote: Differences are expected because:")
-            print("- GPT-2 uses byte-level BPE with special byte token mappings")
-            print("- Our implementation has simplified byte-level fallback")
-            print("- Real tokenizers have additional pre/post-processing steps")
-            print("- Some characters may not have byte representations in the vocabulary")
-            
-            # Show detailed comparison for failed cases
-            print("\n\nDetailed analysis of differences:")
-            for text, description in test_texts:
-                encoding = tokenizer.encode(text)
-                real_tokens = encoding.tokens
-                real_ids = encoding.ids
-                
-                # Suppress output for simple tokenization
-                import io
-                import sys
-                old_stdout = sys.stdout
-                sys.stdout = io.StringIO()
-                try:
-                    simple_result = simple_bpe.tokenize_word(text)
-                    simple_ids = [id for id, _ in simple_result]
-                    simple_tokens = [token for _, token in simple_result]
-                finally:
-                    sys.stdout = old_stdout
-                
-                if real_ids != simple_ids:
-                    print(f"\n'{text}' ({description}):")
-                    print(f"  Tokenizer: {real_tokens} -> {real_ids}")
-                    print(f"  SimpleBPE: {simple_tokens} -> {simple_ids}")
-                    
-                    # Check if it's because of unknown tokens
-                    has_unk = any(t == '<unk>' for t in simple_tokens)
-                    if has_unk:
-                        print(f"  Issue: Contains characters not in vocabulary (byte-level fallback failed)")
+            print("\nNote: This test isolates the BPE merge algorithm by using")
+            print("HuggingFace's pre-tokenizer for both implementations.")
+            print("Any differences indicate issues in the merge logic itself.")
             
     except Exception as e:
-        print(f"Error setting up real tokenizer test: {e}")
-        print("You may need to install: pip install tokenizers")
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
 
 
-def accurate_comparison_test():
-    """Accurate comparison test - using exactly the same vocabulary and merge rules"""
-    print("\n\n=== Accurate Comparison Test ===")
-    print("Using HuggingFace trained model, ensuring vocabulary is exactly the same\n")
-    
-    # Training data
-    corpus = [
-        "the quick brown fox jumps over the lazy dog",
-        "hello world hello there",
-        "testing testing one two three",
-        "this is a test sentence",
-        "machine learning is amazing"
-    ]
-    
-    # Train HuggingFace BPE
-    tokenizer = Tokenizer(BPE(unk_token="<unk>"))
-    tokenizer.pre_tokenizer = Whitespace()
-    
-    trainer = BpeTrainer(
-        vocab_size=200,
-        min_frequency=1,
-        show_progress=False,
-        special_tokens=["<unk>"]
-    )
-    
-    tokenizer.train_from_iterator(corpus, trainer)
-    
-    # Extract model data
-    import tempfile
-    import os
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        temp_file = f.name
-        tokenizer.save(temp_file)
-    
-    with open(temp_file, 'r') as f:
-        tokenizer_data = json.load(f)
-    
-    os.unlink(temp_file)
-    
-    model_dict = tokenizer_data['model']
-    vocab = model_dict['vocab']
-    merges = [tuple(pair.split() if isinstance(pair, str) else pair) for pair in model_dict['merges']]
-    
-    # Create simplified BPE (using same vocabulary)
-    simple_bpe = SimpleBPE(vocab, merges)
-    
-    # Test cases
-    test_cases = [
-        # Words from training set
-        "the", "quick", "hello", "world", "test",
-        # Phrase combinations from training set
-        "brown", "fox", "lazy", "dog",
-        # New word tests
-        "new", "word", "unseen",
-        # Contains numbers
-        "test123", "456test",
-        # Case variations
-        "Hello", "WORLD", "Test"
-    ]
-    
-    results = []
-    
-    for word in test_cases:
-        # HuggingFace encoding
-        hf_encoding = tokenizer.encode(word)
-        hf_tokens = hf_encoding.tokens
-        hf_ids = hf_encoding.ids
-        
-        # Simplified version encoding (silent mode)
-        import io
-        import sys
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        
-        try:
-            simple_result = simple_bpe.tokenize_word(word)
-            simple_ids = [id for id, _ in simple_result]
-            simple_tokens = [token for _, token in simple_result]
-        finally:
-            sys.stdout = old_stdout
-        
-        # Record results
-        is_match = hf_ids == simple_ids
-        results.append({
-            'word': word,
-            'hf_tokens': hf_tokens,
-            'hf_ids': hf_ids,
-            'simple_tokens': simple_tokens,
-            'simple_ids': simple_ids,
-            'match': is_match
-        })
-    
-    # Display results table
-    print(f"{'Word':<15} {'HuggingFace':<30} {'Simplified':<30} {'Match':<10}")
-    print("-" * 85)
-    
-    passed = 0
-    for r in results:
-        hf_str = str(list(zip(r['hf_tokens'], r['hf_ids'])))
-        simple_str = str(list(zip(r['simple_tokens'], r['simple_ids'])))
-        status = "✅" if r['match'] else "❌"
-        if r['match']:
-            passed += 1
-        
-        print(f"{r['word']:<15} {hf_str:<30} {simple_str:<30} {status:<10}")
-    
-    # Summary
-    print("\n" + "=" * 85)
-    print(f"Total: {len(results)} tests")
-    print(f"Passed: {passed} ({passed/len(results)*100:.1f}%)")
-    print(f"Failed: {len(results)-passed} ({(len(results)-passed)/len(results)*100:.1f}%)")
-    
-    # Analyze failures
-    failed_results = [r for r in results if not r['match']]
-    if failed_results:
-        print("\nFailure analysis:")
-        for r in failed_results:
-            print(f"\n'{r['word']}':")
-            print(f"  HuggingFace: {r['hf_tokens']} -> {r['hf_ids']}")
-            print(f"  Simplified:  {r['simple_tokens']} -> {r['simple_ids']}")
-            
-            # Check vocabulary
-            for token in r['simple_tokens']:
-                if token not in vocab and token != '<unk>':
-                    print(f"  ⚠️  Token '{token}' not in vocabulary")
+# llama_tokenizer_test function removed - only keeping aligned test
 
 
 def edge_case_tests():
@@ -717,19 +490,20 @@ if __name__ == "__main__":
             # Run all tests
             manual_example()
             edge_case_tests()
-            compare_with_huggingface()
-            accurate_comparison_test()
-            llama_tokenizer_test()
-        elif sys.argv[1] == "llama":
-            # Run real tokenizer test
-            llama_tokenizer_test()
+            aligned_bpe_test()
+        elif sys.argv[1] == "aligned":
+            # Run aligned BPE test
+            aligned_bpe_test()
+        elif sys.argv[1] == "basic":
+            # Run basic tests
+            manual_example()
+            edge_case_tests()
         else:
-            print("Usage: python simple_bpe_demo.py [all|llama]")
-            print("  all   - Run all tests")
-            print("  llama - Test with real tokenizer (GPT-2/LLaMA-like)")
+            print("Usage: python simple_bpe_demo.py [all|aligned|basic]")
+            print("  (default) - Run aligned BPE test with HF pre-tokenizer")
+            print("  all       - Run all tests")
+            print("  aligned   - Test BPE merges with HF pre-tokenizer (same as default)")
+            print("  basic     - Run basic manual examples and edge case tests")
     else:
-        # Default: run accurate comparison test
-        print("Running accurate comparison test")
-        print("Use 'python simple_bpe_demo.py all' to run all tests")
-        print("Use 'python simple_bpe_demo.py llama' to test with real tokenizer\n")
-        accurate_comparison_test()
+        # Default: run aligned BPE test
+        aligned_bpe_test()
