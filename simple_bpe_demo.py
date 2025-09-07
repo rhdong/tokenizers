@@ -34,6 +34,46 @@ class SimpleBPE:
             if merged in vocab:
                 self.merge_map[(a, b)] = (rank, merged, vocab[merged])
     
+    def _byte_encode_char(self, char: str) -> List[str]:
+        """
+        Encode a character as byte tokens (similar to GPT-2's byte-level BPE)
+        Returns a list of tokens representing the bytes of the character
+        """
+        try:
+            # Encode character to UTF-8 bytes
+            char_bytes = char.encode('utf-8')
+            byte_tokens = []
+            
+            # Try to find byte representations in vocabulary
+            for byte in char_bytes:
+                # GPT-2 uses special byte tokens like 'Ġ' for space (0x20 + 0x100)
+                # and other mappings for bytes 0-255
+                byte_token = None
+                
+                # Check various possible representations
+                # Direct byte value
+                if chr(byte) in self.vocab:
+                    byte_token = chr(byte)
+                # Byte as string number
+                elif str(byte) in self.vocab:
+                    byte_token = str(byte)
+                # Special GPT-2 style byte token (byte + 256 offset for some chars)
+                elif byte >= 32 and chr(byte + 256) in self.vocab:
+                    byte_token = chr(byte + 256)
+                # Hex representation
+                elif f"<0x{byte:02X}>" in self.vocab:
+                    byte_token = f"<0x{byte:02X}>"
+                
+                if byte_token:
+                    byte_tokens.append(byte_token)
+                else:
+                    # If we can't find the byte in vocab, return None
+                    return None
+                    
+            return byte_tokens if byte_tokens else None
+        except:
+            return None
+    
     def tokenize_word(self, word: str) -> List[Tuple[int, str]]:
         """
         Tokenize a single word using BPE (simplified version)
@@ -54,8 +94,14 @@ class SimpleBPE:
             if char in self.vocab:
                 tokens.append(char)
             else:
-                # Simplified: use <unk> for unknown characters
-                tokens.append('<unk>')
+                # For unknown characters, try byte-level fallback
+                # This mimics GPT-2's byte-level BPE behavior
+                byte_tokens = self._byte_encode_char(char)
+                if byte_tokens:
+                    tokens.extend(byte_tokens)
+                else:
+                    # Final fallback: use <unk>
+                    tokens.append('<unk>')
         
         # If only one token, return directly
         if len(tokens) == 1:
@@ -263,71 +309,6 @@ def compare_with_huggingface():
         for text, desc in failed_tests:
             print(f"  - '{text}' ({desc})")
 
-
-def complex_cases_demo():
-    """Demonstrate BPE behavior in complex cases"""
-    print("\n\n=== Complex Cases Demo ===")
-    
-    # Create a vocabulary containing various characters
-    vocab = {
-        # Basic letters
-        'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7,
-        'i': 8, 'j': 9, 'k': 10, 'l': 11, 'm': 12, 'n': 13, 'o': 14, 'p': 15,
-        'q': 16, 'r': 17, 's': 18, 't': 19, 'u': 20, 'v': 21, 'w': 22, 'x': 23,
-        'y': 24, 'z': 25,
-        # Numbers
-        '0': 26, '1': 27, '2': 28, '3': 29, '4': 30, '5': 31, '6': 32, '7': 33, '8': 34, '9': 35,
-        # Punctuation
-        ',': 36, '.': 37, '!': 38, '?': 39, '-': 40, ' ': 41,
-        # Merged tokens
-        'th': 42, 'he': 43, 'the': 44,
-        'in': 45, 'ing': 46,
-        'ed': 47,
-        'll': 48,
-        '12': 49, '123': 50,
-        '<unk>': 99
-    }
-    
-    # Define merge rules
-    merges = [
-        ('t', 'h'),      # 'th'
-        ('h', 'e'),      # 'he'
-        ('th', 'e'),     # 'the'
-        ('i', 'n'),      # 'in'
-        ('in', 'g'),     # 'ing'
-        ('e', 'd'),      # 'ed'
-        ('l', 'l'),      # 'll'
-        ('1', '2'),      # '12'
-        ('12', '3'),     # '123'
-    ]
-    
-    simple_bpe = SimpleBPE(vocab, merges)
-    
-    # Test various complex cases
-    complex_tests = [
-        ("the", "common word"),
-        ("thing", "contains 'ing' suffix"),
-        ("called", "contains 'ed' suffix and 'll'"),
-        ("123", "pure numbers"),
-        ("123abc", "starts with numbers"),
-        ("abc123", "ends with numbers"),
-        ("the-thing", "hyphenated"),
-        ("THE", "uppercase (becomes <unk>)"),
-        ("hello你好", "mixed English-Chinese"),
-        ("", "empty string"),
-        ("a", "single character"),
-        ("aaaaa", "repeated characters"),
-    ]
-    
-    for text, description in complex_tests:
-        print(f"\nTest: '{text}' ({description})")
-        try:
-            result = simple_bpe.tokenize_word(text)
-            print(f"Result: {result}")
-        except Exception as e:
-            print(f"Error: {e}")
-
-
 def llama_tokenizer_test():
     """Test with real LLaMA tokenizer vocabulary and merge rules"""
     print("\n\n=== Real LLaMA Tokenizer Test ===")
@@ -476,9 +457,10 @@ def llama_tokenizer_test():
         
         if passed < total:
             print("\nNote: Differences are expected because:")
-            print("- GPT-2 uses byte-level BPE with special handling")
-            print("- Our implementation is simplified without byte-level encoding")
+            print("- GPT-2 uses byte-level BPE with special byte token mappings")
+            print("- Our implementation has simplified byte-level fallback")
             print("- Real tokenizers have additional pre/post-processing steps")
+            print("- Some characters may not have byte representations in the vocabulary")
             
             # Show detailed comparison for failed cases
             print("\n\nDetailed analysis of differences:")
@@ -507,7 +489,7 @@ def llama_tokenizer_test():
                     # Check if it's because of unknown tokens
                     has_unk = any(t == '<unk>' for t in simple_tokens)
                     if has_unk:
-                        print(f"  Issue: Contains characters not in vocabulary")
+                        print(f"  Issue: Contains characters not in vocabulary (byte-level fallback failed)")
             
     except Exception as e:
         print(f"Error setting up real tokenizer test: {e}")
@@ -734,7 +716,6 @@ if __name__ == "__main__":
         if sys.argv[1] == "all":
             # Run all tests
             manual_example()
-            complex_cases_demo()
             edge_case_tests()
             compare_with_huggingface()
             accurate_comparison_test()
